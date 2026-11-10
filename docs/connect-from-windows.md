@@ -12,8 +12,8 @@ set up on your machine yet.
 
 > **Shortcut:** `scripts/connect-windows.ps1` in this repo walks through
 > all of this for you — checks/installs `gcloud`, logs you in, lists the
-> servers, lets you pick one with the arrow keys, checks you're actually
-> allowed to see its password, opens the tunnel, and launches Remote
+> servers with whether you actually have access to each one, lets you
+> pick one with the arrow keys, opens the tunnel, and launches Remote
 > Desktop Connection with the server address and username already filled
 > in (you just paste the password, already copied to your clipboard).
 > Run it with:

@@ -85,6 +85,18 @@ function Select-Menu {
     }
 }
 
+# Whether this account can read a given VM's support-account secret --
+# in this project's IAM model, that permission and IAP tunnel access are
+# always granted together per person/group, so it's a reliable stand-in
+# for "can this person actually use this VM," without requiring
+# compute.viewer (which is project-wide) to also imply real access, and
+# without actually capturing/exposing the secret's content just to test
+# for it.
+function Test-Access([string]$VmName) {
+    gcloud secrets versions access latest --secret="$VmName-support-login" --project=$ProjectId 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
 # ---------------------------------------------------------------------------
 # Step 2 - log in, if not already
 # ---------------------------------------------------------------------------
@@ -127,12 +139,14 @@ if (-not $vmLines) {
     exit 1
 }
 
+Write-Host "Checking which of these you actually have access to..."
 $vms = @()
 $labels = @()
 foreach ($line in $vmLines) {
     $parts = $line -split "`t"
     $vms += [PSCustomObject]@{ Name = $parts[0]; Zone = $parts[1]; Status = $parts[2] }
-    $labels += ("{0,-22} {1,-26} [{2}]" -f $parts[0], $parts[1], $parts[2])
+    $accessLabel = if (Test-Access $parts[0]) { "access: yes" } else { "access: no" }
+    $labels += ("{0,-22} {1,-26} [{2,-11}] [{3}]" -f $parts[0], $parts[1], $parts[2], $accessLabel)
 }
 
 Write-Host ""
@@ -141,6 +155,12 @@ $selectedIndex = Select-Menu -Options $labels
 $vm = $vms[$selectedIndex]
 Write-Host ""
 Write-Host "Selected: $($vm.Name) ($($vm.Zone)) -- currently $($vm.Status)"
+
+if (-not (Test-Access $vm.Name)) {
+    Write-Host "ERROR: you don't have access to '$($vm.Name)' (no permission on its credentials)." -ForegroundColor Red
+    Write-Host "Ask whoever manages the project to grant you access, or pick a different server."
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # Step 4 - start it if it's off
@@ -200,11 +220,14 @@ if ($vm.Status -ne "RUNNING") {
 }
 
 # ---------------------------------------------------------------------------
-# Step 5 - check you can actually see this VM's password before opening a tunnel
+# Step 5 - fetch this VM's credentials (access was already confirmed
+# right after picking it, above -- this is the real fetch, not a second
+# access check, though it's kept guarded the same way in case access
+# was revoked in between)
 # ---------------------------------------------------------------------------
 $secretId = "$($vm.Name)-support-login"
 Write-Host ""
-Write-Host "Checking access to this server's credentials ($secretId)..."
+Write-Host "Fetching this server's credentials ($secretId)..."
 
 try {
     $secretJson = gcloud secrets versions access latest --secret=$secretId --project=$ProjectId 2>$null
@@ -214,7 +237,7 @@ try {
     Write-Host "Ask whoever manages the project to grant you access, or pick a different server."
     exit 1
 }
-Write-Host "Access confirmed."
+Write-Host "Credentials retrieved."
 
 # The secret's value is JSON: {"username":"support","password":"..."}.
 # ConvertFrom-Json is a real, spec-compliant JSON parser -- first choice

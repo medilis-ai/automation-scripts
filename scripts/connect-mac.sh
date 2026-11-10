@@ -46,6 +46,17 @@ urlencode() {
   printf '%s' "$out"
 }
 
+# Whether this account can read a given VM's support-account secret —
+# in this project's IAM model, that permission and IAP tunnel access are
+# always granted together per person/group, so it's a reliable stand-in
+# for "can this person actually use this VM," without requiring
+# compute.viewer (which is project-wide) to also imply real access, and
+# without actually capturing/exposing the secret's content just to test
+# for it.
+check_access() {
+  gcloud secrets versions access latest --secret="${1}-support-login" --project="$PROJECT_ID" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # Step 1 — make sure gcloud is installed
 # ---------------------------------------------------------------------------
@@ -212,10 +223,16 @@ if [[ ${#vm_lines[@]} -eq 0 ]]; then
   exit 1
 fi
 
+echo "Checking which of these you actually have access to..."
 MENU_OPTIONS=()
 for line in "${vm_lines[@]}"; do
   IFS=$'\t' read -r name zone status <<<"$line"
-  printf -v label "%-22s %-26s [%s]" "$name" "$zone" "$status"
+  if check_access "$name"; then
+    access_label="access: yes"
+  else
+    access_label="access: no"
+  fi
+  printf -v label "%-22s %-26s [%-11s] [%s]" "$name" "$zone" "$status" "$access_label"
   MENU_OPTIONS+=("$label")
 done
 
@@ -225,6 +242,12 @@ menu_select
 IFS=$'\t' read -r VM_NAME VM_ZONE VM_STATUS <<<"${vm_lines[$MENU_SELECTED_INDEX]}"
 echo
 echo "Selected: $VM_NAME ($VM_ZONE) — currently $VM_STATUS"
+
+if ! check_access "$VM_NAME"; then
+  echo "ERROR: you don't have access to '$VM_NAME' (no permission on its credentials)." >&2
+  echo "Ask whoever manages the project to grant you access, or pick a different server." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Step 4 — start it if it's off
@@ -277,11 +300,14 @@ if [[ "$VM_STATUS" != "RUNNING" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5 — check you can actually see this VM's password before opening a tunnel
+# Step 5 — fetch this VM's credentials (access was already confirmed
+# right after picking it, above — this is the real fetch, not a second
+# access check, though it's kept guarded the same way in case access
+# was revoked in between)
 # ---------------------------------------------------------------------------
 SECRET_ID="${VM_NAME}-support-login"
 echo
-echo "Checking access to this server's credentials ($SECRET_ID)..."
+echo "Fetching this server's credentials ($SECRET_ID)..."
 err_file=$(mktemp)
 if ! VM_SECRET_JSON=$(gcloud secrets versions access latest --secret="$SECRET_ID" --project="$PROJECT_ID" 2>"$err_file"); then
   echo "ERROR: you don't have permission to view the credentials for '$VM_NAME'." >&2
@@ -290,7 +316,7 @@ if ! VM_SECRET_JSON=$(gcloud secrets versions access latest --secret="$SECRET_ID
   exit 1
 fi
 rm -f "$err_file"
-echo "Access confirmed."
+echo "Credentials retrieved."
 
 # The secret's value is JSON: {"username":"support","password":"..."} —
 # pull out just the fields we need. Deliberately NOT using strict
