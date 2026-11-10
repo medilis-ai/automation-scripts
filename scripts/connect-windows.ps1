@@ -10,6 +10,18 @@ Usage: right-click -> Run with PowerShell, or from a PowerShell prompt:
 
 $ErrorActionPreference = "Stop"
 
+# Defensive: on some PowerShell/gcloud-SDK combinations, a native
+# command's stderr output gets turned into an error record that
+# $ErrorActionPreference = "Stop" above then escalates into a
+# terminating error -- even past a `2>$null` redirect on the call site,
+# confirmed on a real run where gcloud.ps1's own internal call into
+# python.exe leaked a PERMISSION_DENIED this way. $false restores the
+# older, simpler behavior (a non-zero native exit code is just that,
+# not an escalated error) wherever this variable exists; the real,
+# always-effective fix is still wrapping any gcloud call that's
+# expected to sometimes fail in try/catch, see Test-Access below.
+$PSNativeCommandUseErrorActionPreference = $false
+
 $ProjectId = "hailth-radiology"
 $RdpPort = 3389
 
@@ -93,7 +105,17 @@ function Select-Menu {
 # without actually capturing/exposing the secret's content just to test
 # for it.
 function Test-Access([string]$VmName) {
-    gcloud secrets versions access latest --secret="$VmName-support-login" --project=$ProjectId 2>$null | Out-Null
+    # try/catch, not just checking $LASTEXITCODE, because a real
+    # PERMISSION_DENIED here can surface as a terminating error (see the
+    # note on $PSNativeCommandUseErrorActionPreference above) rather
+    # than just a non-zero exit code -- without this, Test-Access
+    # correctly detecting "no access" on any VM crashed the whole
+    # script instead of just returning $false. Confirmed on a real run.
+    try {
+        gcloud secrets versions access latest --secret="$VmName-support-login" --project=$ProjectId 2>$null | Out-Null
+    } catch {
+        return $false
+    }
     return $LASTEXITCODE -eq 0
 }
 
